@@ -1,35 +1,52 @@
 package com.thunderscore.intercom.invitation;
 
+import com.thunderscore.intercom.mapper.*;
+
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 
 /**
- * Instances of this class organize invitation using chain of CustomerHandlers.
- * Chain contains three handlers:
+ * Instances of this class organize invitation using chain of Mappers.
+ * Chain contains four mappers:
  * reader - reads customers from input
+ * json transformer - convert text to Customer
  * filter - applies geo filter to read customers to define which are close enough
  * writer - writes filtered customers to output. "invite" them
- * Handlers work in parallel mode,  using CustomerStorage to pass Customers from handler to handler
+ * Mappers work in parallel mode,  using MapperStorage to pass objects from mapper to mapper
  */
-public class InvitationsSender extends CustomerHandlersChain{
+public class InvitationsSender {
 
 
-    private int readBufferSize;
-    private int sendBufferSize;
     private final GeoUtils geoUtils;
     private List<Customer> invited = new ArrayList<>();
+    private boolean lastFailed;
+    private int lastErrorsCount;
 
 
-    public InvitationsSender(double originLatitude, double originLongitude, double maxDistance,
-                             int readBufferSize, int sendBufferSize){
-        this.readBufferSize = readBufferSize;
-        this.sendBufferSize = sendBufferSize;
+    public InvitationsSender(double originLatitude, double originLongitude, double maxDistance){
         this.geoUtils = new GeoUtils(originLatitude, originLongitude, maxDistance);
+    }
+
+    /**
+     * Returns true if last invitation failed
+     * @return true if last invitation failed
+     */
+    public boolean isLastFailed() {
+        return lastFailed;
+    }
+
+    /**
+     * Number of errors in last invitation
+     * @return number of errors in last invitation
+     */
+    public int getLastErrorsCount() {
+        return lastErrorsCount;
     }
 
     /**
@@ -50,35 +67,49 @@ public class InvitationsSender extends CustomerHandlersChain{
     }
 
     private void invite(Reader inputReader) {
-        CustomerStorage readBuffer = new CustomerStorage(readBufferSize);
-        CustomerStorage sendBuffer = new CustomerStorage(sendBufferSize);
-        invited.clear();
 
-        CustomerReader reader = new JSONSingleLineCustomerReader(inputReader, readBuffer);
-        CustomerHandler filter = new CustomerHandler(readBuffer, sendBuffer, reader){
-            @Override
-            protected boolean process(Customer customer) {
-                return geoUtils.isInMaxDistanceCircle(customer.getLatitude(), customer.getLongitude());
+        lastFailed = false;
+        try {
+            MappersChain chain = new MappersChain();
+            chain.add(new SingleLineIOReaderMapper(inputReader, false));
+            chain.add(new FromJSONMapper<Customer>(true) {
+                @Override
+                protected Customer parseObject(Map map) {
+                    return Customer.fromMap(map);
+                }
+            });
+            chain.add(new FilterMapper<Customer>() {
+                @Override
+                protected boolean acceptable(Customer obj) {
+                    return geoUtils.isInMaxDistanceCircle(obj.getLatitude(), obj.getLongitude());
+                }
+            });
+            chain.addLast(new WriterMapper<Customer>() {
+                @Override
+                protected void doWrite(Customer obj) {
+                    invited.add(obj);
+                }
+            });
+
+
+            chain.execute();
+
+            if (chain.isInterrupted()){
+                throw new RuntimeException("Interrupted");
             }
-        };
-        CustomerWriter writer = new CustomerWriter(sendBuffer, filter){
-            @Override
-            protected void write(Customer customer) throws InterruptedException {
-                invited.add(customer);
-            }
-        };
 
-        execute(new CustomerHandler[]{reader, filter, writer});
-
-        invited.sort((o1, o2) -> o1.getId() - o2.getId());
-
-        print();
-
+            lastErrorsCount = chain.getErrorsCount();
+        } catch(Exception e){
+            lastFailed = true;
+            throw e;
         }
 
+        invited.sort((o1, o2) -> o1.getId() - o2.getId());
+        print();
+    }
+
     private void print() {
-        for (int i = 0; i < invited.size(); i++) {
-            Customer customer = invited.get(i);
+        for (Customer customer : invited) {
             System.out.println(String.format("id: %5d name: %s", customer.getId(), customer.getName()));
         }
     }
@@ -89,6 +120,7 @@ public class InvitationsSender extends CustomerHandlersChain{
                 message, System.lineSeparator());
         System.out.println(mess);
     }
+
     public static void main(String[] args) throws FileNotFoundException {
         if (args.length != 4){
             printError("wrong number af arguments");
@@ -106,15 +138,16 @@ public class InvitationsSender extends CustomerHandlersChain{
         try{
             originLatitude = Double.parseDouble(args[argIndex++]);
             originLongitude = Double.parseDouble(args[argIndex++]);
-            maxDistance = Double.parseDouble(args[argIndex++]);
+            maxDistance = Double.parseDouble(args[argIndex]);
         } catch (Exception e) {
             printError(e.getMessage());
             return;
         }
 
-        InvitationsSender sender = new InvitationsSender(originLatitude, originLongitude, maxDistance, 50, 50);
+        InvitationsSender sender = new InvitationsSender(originLatitude, originLongitude, maxDistance);
         sender.invite(new FileReader(file));
     }
+
 }
 
 

@@ -1,11 +1,6 @@
 <component name="ArtifactManager">
   <artifact build-on-make="true" name="IntercomEmailScreening:jar">
     <output-path>$PROJECT_DIR$/out/artifacts/IntercomEmailScreening_jar</output-path>
-    <root id="root">
-      <element id="archive" name="IntercomEmailScreening.jar">
-        <element id="module-output" name="IntercomEmailScreening" />
-      </element>
-      <element id="library" level="project" name="groovy-2.4.5" />
-    </root>
+    <root id="root" />
   </artifact>
 </component>
